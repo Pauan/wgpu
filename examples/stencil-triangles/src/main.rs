@@ -82,7 +82,7 @@ impl wgpu_example::framework::Example for Triangles {
                 targets: &[Some(wgpu::ColorTargetState {
                     format: config.view_formats[0],
                     blend: None,
-                    write_mask: wgpu::ColorWrites::empty(),
+                    write_mask: wgpu::ColorWrites::RED,
                 })],
             }),
             primitive: Default::default(),
@@ -92,7 +92,7 @@ impl wgpu_example::framework::Example for Triangles {
                 depth_compare: wgpu::CompareFunction::Always,
                 stencil: wgpu::StencilState {
                     front: wgpu::StencilFaceState {
-                        compare: wgpu::CompareFunction::Always,
+                        compare: wgpu::CompareFunction::LessEqual,
                         pass_op: wgpu::StencilOperation::Replace,
                         ..Default::default()
                     },
@@ -126,7 +126,8 @@ impl wgpu_example::framework::Example for Triangles {
                 depth_compare: wgpu::CompareFunction::Always,
                 stencil: wgpu::StencilState {
                     front: wgpu::StencilFaceState {
-                        compare: wgpu::CompareFunction::Greater,
+                        compare: wgpu::CompareFunction::LessEqual,
+                        pass_op: wgpu::StencilOperation::Replace,
                         ..Default::default()
                     },
                     back: wgpu::StencilFaceState::IGNORE,
@@ -187,7 +188,11 @@ impl wgpu_example::framework::Example for Triangles {
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         {
+            let bundle1;
+            let bundle2;
+
             let depth_view = self.stencil_buffer.create_view(&Default::default());
+
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -207,7 +212,7 @@ impl wgpu_example::framework::Example for Triangles {
                     view: &depth_view,
                     depth_ops: None,
                     stencil_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(0),
+                        load: wgpu::LoadOp::Clear(!0),
                         store: true,
                     }),
                 }),
@@ -215,15 +220,61 @@ impl wgpu_example::framework::Example for Triangles {
                 occlusion_query_set: None,
             });
 
-            rpass.set_stencil_reference(1);
 
-            rpass.set_pipeline(&self.mask_pipeline);
-            rpass.set_vertex_buffer(0, self.mask_vertex_buffer.slice(..));
-            rpass.draw(0..3, 0..1);
+            fn bundle<'a, F>(device: &'a wgpu::Device, f: F) -> wgpu::RenderBundle where F: FnOnce(&mut wgpu::RenderBundleEncoder<'a>) {
+                let mut bundle = device.create_render_bundle_encoder(&wgpu::RenderBundleEncoderDescriptor {
+                    label: None,
+                    color_formats: &[Some(wgpu::TextureFormat::Bgra8UnormSrgb)],
+                    depth_stencil: Some(wgpu::RenderBundleDepthStencil {
+                        format: wgpu::TextureFormat::Stencil8,
+                        depth_read_only: true,
+                        stencil_read_only: false,
+                    }),
+                    sample_count: wgpu::MultisampleState::default().count,
+                    multiview: None,
+                });
 
-            rpass.set_pipeline(&self.outer_pipeline);
-            rpass.set_vertex_buffer(0, self.outer_vertex_buffer.slice(..));
-            rpass.draw(0..3, 0..1);
+                f(&mut bundle);
+
+                bundle.finish(&wgpu::RenderBundleDescriptor {
+                    label: None,
+                })
+            }
+
+
+            bundle1 = bundle(device, |rpass| {
+                rpass.set_pipeline(&self.mask_pipeline);
+                rpass.set_vertex_buffer(0, self.mask_vertex_buffer.slice(..));
+                rpass.draw(0..3, 0..1);
+            });
+
+            bundle2 = bundle(device, |rpass| {
+                rpass.set_pipeline(&self.outer_pipeline);
+                rpass.set_vertex_buffer(0, self.outer_vertex_buffer.slice(..));
+                rpass.draw(0..3, 0..1);
+            });
+
+
+            // Run bundle code
+            if true {
+                rpass.set_stencil_reference(0);
+                rpass.execute_bundles(std::iter::once(&bundle1));
+
+                rpass.set_stencil_reference(1);
+                rpass.execute_bundles(std::iter::once(&bundle2));
+
+            // Run regular code
+            } else {
+                rpass.set_stencil_reference(0);
+                rpass.set_pipeline(&self.mask_pipeline);
+                rpass.set_vertex_buffer(0, self.mask_vertex_buffer.slice(..));
+                rpass.draw(0..3, 0..1);
+
+                rpass.set_stencil_reference(1);
+                rpass.set_pipeline(&self.outer_pipeline);
+                rpass.set_vertex_buffer(0, self.outer_vertex_buffer.slice(..));
+                rpass.draw(0..3, 0..1);
+            }
         }
 
         queue.submit(Some(encoder.finish()));
